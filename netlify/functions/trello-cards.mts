@@ -1,11 +1,22 @@
 import type { Context } from "@netlify/functions";
 
-// All active boards in the Escape Maze Trello organization
-const BOARD_IDS = [
-  "67648305b2de6bcb85d2d2a7", // General Ops
-  "6790fcaaf2003a3796c48748", // Haunt Season
-  "67cb50c664a7719b75125d82", // Outdoor Trails
-];
+// General Ops board — the only board we query for the dashboard card
+const GENERAL_OPS_BOARD_ID = "QWrvwJas";
+
+// List IDs to include: Mike, ANYONE TO DO, INCOMING ISSUES
+const TARGET_LIST_IDS = new Set([
+  "676483172b9df08efc4d3180", // Mike
+  "68a8d0d8c5fa3c2b0732d4b8", // ANYONE TO DO
+  "69d7a61df2718b7a33c6d4aa", // INCOMING ISSUES
+]);
+
+const LIST_PRIORITY: Record<string, number> = {
+  "INCOMING ISSUES": 0,
+  "ANYONE TO DO": 1,
+  "Mike": 2,
+};
+
+const MAX_CARDS = 10;
 
 let cache: { data: unknown; ts: number } | null = null;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -22,54 +33,57 @@ export default async (_req: Request, _context: Context) => {
   }
 
   try {
-    const allCards: Array<{ name: string; due: string; list: string; board: string }> = [];
-
-    for (const boardId of BOARD_IDS) {
-      // Get board name
-      const boardResp = await fetch(
-        `https://api.trello.com/1/boards/${boardId}?key=${key}&token=${token}&fields=name`
-      );
-      if (!boardResp.ok) continue;
-      const boardData = await boardResp.json() as { name: string };
-
-      // Get lists for this board
-      const listsResp = await fetch(
-        `https://api.trello.com/1/boards/${boardId}/lists?key=${key}&token=${token}&fields=id,name`
-      );
-      if (!listsResp.ok) continue;
-      const lists = await listsResp.json() as Array<{ id: string; name: string }>;
-      const listMap: Record<string, string> = {};
-      for (const l of lists) listMap[l.id] = l.name;
-
-      // Get cards with due dates
-      const cardsResp = await fetch(
-        `https://api.trello.com/1/boards/${boardId}/cards?key=${key}&token=${token}&fields=name,due,idList,closed&filter=open`
-      );
-      if (!cardsResp.ok) continue;
-      const cards = await cardsResp.json() as Array<{
-        name: string;
-        due: string | null;
-        idList: string;
-        closed: boolean;
-      }>;
-
-      for (const card of cards) {
-        if (!card.due || card.closed) continue;
-        const dueDate = new Date(card.due);
-        const formatted = dueDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        allCards.push({
-          name: card.name,
-          due: formatted,
-          list: listMap[card.idList] ?? "Unknown",
-          board: boardData.name,
-        });
-      }
+    // Fetch all open cards from the General Ops board
+    const cardsResp = await fetch(
+      `https://api.trello.com/1/boards/${GENERAL_OPS_BOARD_ID}/cards?key=${key}&token=${token}&fields=name,due,idList,closed,shortUrl&filter=open`
+    );
+    if (!cardsResp.ok) {
+      return Response.json({ error: "Failed to fetch Trello cards" }, { status: 502 });
     }
+    const cards = await cardsResp.json() as Array<{
+      name: string;
+      due: string | null;
+      idList: string;
+      closed: boolean;
+      shortUrl: string;
+    }>;
 
-    // Sort by due date ascending
-    allCards.sort((a, b) => new Date(a.due).getTime() - new Date(b.due).getTime());
+    // List name lookup
+    const LIST_NAMES: Record<string, string> = {
+      "676483172b9df08efc4d3180": "Mike",
+      "68a8d0d8c5fa3c2b0732d4b8": "ANYONE TO DO",
+      "69d7a61df2718b7a33c6d4aa": "INCOMING ISSUES",
+    };
 
-    const result = { board: "Escape Maze", cards: allCards.slice(0, 10) };
+    // Filter to target lists only, exclude closed cards
+    const filtered = cards
+      .filter((c) => !c.closed && TARGET_LIST_IDS.has(c.idList))
+      .map((c) => {
+        const listName = LIST_NAMES[c.idList] ?? "Unknown";
+        return {
+          name: c.name,
+          due: c.due
+            ? new Date(c.due).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+            : null,
+          list: listName,
+          url: c.shortUrl,
+          _priority: LIST_PRIORITY[listName] ?? 99,
+          _dueMs: c.due ? new Date(c.due).getTime() : Infinity,
+        };
+      });
+
+    // Sort: INCOMING ISSUES first, then ANYONE TO DO, then Mike; within each list by due date (nulls last)
+    filtered.sort((a, b) => {
+      if (a._priority !== b._priority) return a._priority - b._priority;
+      return a._dueMs - b._dueMs;
+    });
+
+    const result = {
+      board: "General Ops",
+      lists: ["INCOMING ISSUES", "ANYONE TO DO", "Mike"],
+      cards: filtered.slice(0, MAX_CARDS).map(({ _priority, _dueMs, ...c }) => c),
+    };
+
     cache = { data: result, ts: Date.now() };
     return Response.json(result);
   } catch (err) {
