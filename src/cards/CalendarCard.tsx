@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { CalendarDays, MapPin, AlertTriangle } from 'lucide-react';
 import CardShell from '../components/CardShell';
 import ExpandedOverlay from '../components/ExpandedOverlay';

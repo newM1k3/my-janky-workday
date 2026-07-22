@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Lightbulb, Plus, Trash2 } from 'lucide-react';
 import CardShell from '../components/CardShell';
 import ExpandedOverlay from '../components/ExpandedOverlay';
